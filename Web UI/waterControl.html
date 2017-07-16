@@ -1,0 +1,566 @@
+<!DOCTYPE html>
+<!-- A single page application for controlling a watering system via the Particle cloud. Assumes that matching firmware has been installed on the target device.
+     Released under the GPL v2 license. -->
+<html>
+<head>
+	<meta name="viewport" content="width=device-width, initial-scale=1" />
+	<title>Water Control</title>
+	<style type="text/css">
+		body {
+			font-family: sans-serif;
+		}
+	
+		.mainForm {
+			max-width:250px;
+			margin-left: auto;
+			margin-right: auto;
+			margin-top: 0.25em;
+			background-color: aliceblue;
+			padding: 0 0.5em 0.5em 0.5em;
+		}
+	
+		h2 {
+			background-color: #35B;
+			color:#EEF;
+			margin: 0 -0.35em 0 -0.35em;
+			padding: 0.1em 0.25em 0.1em 0.25em;
+		}
+	
+		#wndDeviceDetail label {
+			width:150px;
+			display:inline-block;
+		}
+		.narrowInput {
+			width:50px;
+			min-height: 25px;
+		}
+		.wideInput {
+			width:80px;
+			min-height: 25px;
+		}
+		
+		.inputDiv {
+			margin-bottom:0.5em;
+		}
+		
+		.commandDiv {
+			text-align:center;
+		}
+		
+		.commandButton {
+			width:100px;
+			min-height: 30px;
+			margin:0.5em;
+		}
+		
+		.channelMarkerDiv {
+			width:30px;
+			height:30px;
+			border: solid 3px #AAA;
+			background-color: #EEE;
+			border-radius:30px;
+			position:relative;
+			display:inline-block;
+			vertical-align: top;
+			text-align: center;
+			line-height: 1.8;
+		}
+		
+		.cmIdle {
+			border-color: #DDD;
+			background-color: #F0F0F0;
+		}
+		
+		.cmWaiting {
+			border-color: #67E;
+			background-color: #ABF;
+		}
+		
+		.cmActive {
+			border-color: #6E7;
+			background-color: #AFB;
+		}
+		
+		.loader,
+		.loader:after {
+		  border-radius: 50%;
+		  width: 3em;
+		  height: 3em;
+		}
+		.loader {
+		  margin: 20px auto;
+		  font-size: 10px;
+		  position: relative;
+		  text-indent: -9999em;
+		  border-top: 0.7em solid rgba(100, 110, 255, 0.2);
+		  border-right: 0.7em solid rgba(100, 110, 255, 0.2);
+		  border-bottom: 0.7em solid rgba(100, 110, 255, 0.2);
+		  border-left: 0.7em solid rgba(100, 110, 255, 1);
+		  -webkit-transform: translateZ(0);
+		  -ms-transform: translateZ(0);
+		  transform: translateZ(0);
+		  -webkit-animation: load8 1.1s infinite linear;
+		  animation: load8 1.1s infinite linear;
+		}
+		@-webkit-keyframes load8 {
+		  0% {
+			-webkit-transform: rotate(0deg);
+			transform: rotate(0deg);
+		  }
+		  100% {
+			-webkit-transform: rotate(360deg);
+			transform: rotate(360deg);
+		  }
+		}
+		@keyframes load8 {
+		  0% {
+			-webkit-transform: rotate(0deg);
+			transform: rotate(0deg);
+		  }
+		  100% {
+			-webkit-transform: rotate(360deg);
+			transform: rotate(360deg);
+		  }
+		}
+
+	</style>
+</head>
+<body>
+	<div id="wndDeviceSelect" class="mainForm">
+		<h2>Devices</h2>
+		<div id="devices">
+		</div>
+	</div>
+	
+	<div id="wndDeviceDetail" class="mainForm" style="display:none">
+		<h2 id="deviceDetailName"></h2>
+		<div id="panDeviceStatus" cass="panel">
+			<h3>Status</h2>
+			
+			<div id="divDeviceInfo">
+				<span id="txtChannelCount"></span> channels.
+			</div> 
+			
+			<div id="divChannelStatus">
+				<div class="channelMarkerDiv"></div>
+			</div>
+		</div>
+		<div id="panWaterFunctions" class="panel">
+			<h3>Control</h3>
+			<div class="inputDiv">
+				<label for="txtWaterChannel">Channel</label>
+				<input type="number" id="txtWaterChannel" class="narrowInput"></input>
+			</div>
+			<div class="inputDiv">
+				<label for="txtWaterSeconds">Watering time (seconds)</label>
+				<input type="number" id="txtWaterSeconds" class="wideInput"></input>
+			</div>
+			<div class="commandDiv">
+				<button id="btnStartWater" class="commandButton">Start</button>
+			</div>
+			<div class="commandDiv">
+				<button id="btnStopAll" class="commandButton">Stop All</button>
+			</div>
+		</div>
+		<div id="panWaterStatus">
+			<span id="lblWaterStatus" ></span>
+			<div id= "spinner" class="loader"></div>
+		</div>
+	</div>
+	
+	<script lang="javascript" type="text/javascript">
+		
+		/**
+		 * The config object handles persistent configuration that needs to remain on the browser between sessions.
+		 */
+	
+		var config = (function() {
+			var config = {};
+			
+			/** Particle.io API access token */
+			config.accessToken = null;
+			
+			/** Particle device ID */
+			config.deviceId = null;
+			
+			/** Saves current cofig to browser storage */
+			config.save = function() {
+				localStorage.setItem('accessToken', config.accessToken);
+				localStorage.setItem('deviceId', config.deviceId);
+			};
+			
+			config.accessToken = localStorage.getItem('accessToken');
+			config.deviceId = localStorage.getItem('deviceId');
+			
+			return config;
+		})();
+		
+		/**
+		 * Manages stateless communications to the Particle device API, with no reference to functions specific to the watering control software.
+		 */
+		var devices = (function(config) {
+			var devices = {};
+			
+			/**
+			 * Enumerate Particle devices.
+			 */
+			devices.getDevicesAsync = function(successCallback) {
+				if(!config.accessToken) throw 'No access token';
+				
+				var loadListener = function() {
+					successCallback(JSON.parse(this.response));
+				};
+				
+				var xhr = new XMLHttpRequest();
+				
+				var url = 'https://api.particle.io/v1/devices?access_token=' + config.accessToken;
+				
+				xhr.addEventListener('load', loadListener);
+				xhr.open('GET', url);
+				xhr.setRequestHeader('Accept', 'application/json');
+				xhr.send();
+			}
+			
+			/**
+			 * Retrieve device details for a given device ID.
+			 */
+			devices.getDeviceDetailAsync = function(successCallback) {
+				if(!config.accessToken) throw 'No access token';
+				if(!config.deviceId) throw 'No device id';
+				
+				var loadListener = function() {
+					successCallback(JSON.parse(this.response));
+				};
+				
+				var xhr = new XMLHttpRequest();
+				
+				var url = 'https://api.particle.io/v1/devices/' + config.deviceId +'?access_token=' + config.accessToken;
+				
+				xhr.addEventListener('load', loadListener);
+				xhr.open('GET', url);
+				xhr.setRequestHeader('Accept', 'application/json');
+				xhr.send();
+			};
+			
+			/**
+			 * Generic helper to manage call to a Paticle function.
+			 *
+			 * Has a dependency on uiMgr, which probably should be injected.
+			 */
+			devices.callParticleFunction = function(functionName, argument, successCallback, failureCallback) {
+				if(!config.accessToken) throw 'No access token';
+				if(!config.deviceId) throw 'No device id';
+				
+				if(typeof argument != 'string') argument = '';
+				
+				var loadListener = function() {
+					uiMgr.stopSpinner();
+					if(successCallback) successCallback(JSON.parse(this.response));
+				};
+				
+				var errorListener = function() {
+					uiMgr.stopSpinner();
+					if(failureCallback) failureCallback();
+				};
+				
+				var xhr = new XMLHttpRequest();
+				
+				var url = 'https://api.particle.io/v1/devices/' + config.deviceId + '/' + functionName +'?access_token=' + config.accessToken;
+				
+				var argObj = {};
+				argObj.arg = argument;
+				
+				xhr.addEventListener('load', loadListener);
+				xhr.addEventListener('error', errorListener);
+				xhr.addEventListener('timeout', errorListener);
+				xhr.open('POST', url);
+				xhr.setRequestHeader('Accept', 'application/json');
+				xhr.setRequestHeader("Content-Type", "application/json");
+				xhr.send(JSON.stringify(argObj));
+				uiMgr.startSpinner();
+				
+			};
+			
+			return devices;
+		})(config);
+		
+		/**
+		 * Manages the UI state, as well as showing, hiding and population of the various form elements.
+		 * Orchestrates most calls to the device and config objects.
+		 */
+		var uiMgr = (function(config, devices) {
+			var uiMgr = {};
+			
+			/** Fills out the device list in devices div */
+			var populateDeviceList = function(devices) {
+				var devicesDiv = document.getElementById('devices');
+				uiMgr.stopSpinner();
+				
+				devicesDiv.innerHTML = '';
+				
+				var checkedHandler = function() {
+					if(this.checked) {
+						config.deviceId = this.getAttribute('data');
+						config.save();
+						uiMgr.showDeviceDetail(deviceDetailCallback);
+					}
+				};
+				
+				for(var i = 0; i < devices.length; i++) {
+					var chkDiv = document.createElement('div');
+					devicesDiv.appendChild(chkDiv);
+					
+					var chk = document.createElement('input');
+					chk.setAttribute('type', 'radio');
+					chk.setAttribute('name', 'chkDevice');
+					chk.setAttribute('id', 'chkDevice' + i);
+					chk.setAttribute('data', devices[i].id);
+					if(devices[i].id == config.deviceId) {
+						uiMgr.showDeviceDetail(deviceDetailCallback);
+						chk.setAttribute('checked', '');
+					}
+					chk.addEventListener('change', checkedHandler);
+					chkDiv.appendChild(chk);
+					
+					var label = document.createElement('label');
+					label.setAttribute('for','chkDevice' + i);
+					label.innerText = devices[i].name;
+					chkDiv.appendChild(label);
+					
+				}
+			};
+			
+			var deviceChannelsCallback = function(output) {
+				uiMgr.curDeviceChannels = output.return_value + 0;
+				document.getElementById('txtChannelCount').innerText = uiMgr.curDeviceChannels;
+				
+				//Clear existing channel indicators
+				var statusDiv = document.getElementById('divChannelStatus');
+				while (statusDiv.firstChild) {
+					statusDiv.removeChild(statusDiv.firstChild);
+				}
+				
+				//Add indicator for each channel
+				for(var i = 0; i < uiMgr.curDeviceChannels; i++) {
+					var indDiv = document.createElement('div');
+					indDiv.className = 'channelMarkerDiv';
+					indDiv.setAttribute('id','divChanMarker' + i)
+					statusDiv.appendChild(indDiv);
+				}
+				
+				if(uiMgr.enableStatusRefresh == true) uiMgr.refreshDeviceStatus();
+				
+			};
+				
+			var deviceDetailCallback = function(detail) {
+				var foundQueue = false;
+				var foundStop = false;
+				uiMgr.enableStatusRefresh = false;
+			
+				document.getElementById('deviceDetailName').innerText = detail.name;
+				document.getElementById('wndDeviceDetail').style.display = 'block';
+				if(detail.connected) {
+					for(var i = 0; i < detail.functions.length; i++) {
+						if(detail.functions[i] == 'queueWater') foundQueue = true;
+						if(detail.functions[i] == 'stopAll') foundStop = true;
+					}
+					if(foundQueue && foundStop) {
+						document.getElementById('panWaterFunctions').style.display = 'block';
+						document.getElementById('panDeviceStatus').style.display = 'block';
+						uiMgr.enableStatusRefresh = true;
+						devices.callParticleFunction('getChCount','',deviceChannelsCallback)
+					} else {
+						uiMgr.setWaterMessage('Incompatible device');
+					}
+				} else {
+					uiMgr.setWaterMessage('Device offline');
+				}
+				
+			};
+			
+			/** Load details for the selected device. config.deviceId must have been populated before calling this function */
+			uiMgr.showDeviceDetail = function() {
+				if(uiMgr.refreshTimeout) window.clearTimeout(uiMgr.refreshTimeout);
+				document.getElementById('wndDeviceDetail').style.display = 'none';
+				document.getElementById('panWaterFunctions').style.display = 'none';
+				document.getElementById('panDeviceStatus').style.display = 'none';
+				uiMgr.setWaterMessage('');
+				devices.getDeviceDetailAsync(deviceDetailCallback);
+			}
+			
+			/** 
+			 * Updates the channel status of each channel for the current device, and sets up a 10 second refresh timer on uiMgr.refreshTimeout.
+			 * Current architecture makes this operation quite chatty
+			 */	
+			uiMgr.refreshDeviceStatus = function() {
+				for(var i =0 ; i < uiMgr.curDeviceChannels; i++) {
+					uiMgr.refreshChannelStatus(i);
+				};
+				
+				if(uiMgr.refreshTimeout) window.clearTimeout(uiMgr.refreshTimeout);
+				uiMgr.refreshTimeout = window.setTimeout(uiMgr.refreshDeviceStatus, 10000);
+			};
+			
+			/**
+			 * Calls for the currents status of a given channel for the current device, and updates the UI accordingly.
+			 */
+			uiMgr.refreshChannelStatus = function(channelId) {
+				devices.callParticleFunction('getTimeOnCh', channelId + '', function(output) {
+						var indDiv = document.getElementById('divChanMarker' + channelId);
+						if(output.return_value == 0)
+						{
+							indDiv.className = 'channelMarkerDiv cmIdle';
+							indDiv.innerText = '';
+						} else {
+							indDiv.innerText = output.return_value;
+							devices.callParticleFunction('isChActive', channelId + '', function(output2){
+									if(output2.return_value == 1) {
+										indDiv.className = 'channelMarkerDiv cmActive';
+									} else {
+										indDiv.className = 'channelMarkerDiv cmWaiting';
+									}
+								}
+							);
+						}
+						
+					}
+				);
+			};
+			
+			/**
+			 * Displays the UI required to set the Particle API access token.
+			 * At present, just a window.prompt.
+			 */
+			uiMgr.setAccessToken = function() {
+				config.accessToken = window.prompt('Please enter Particle.io access token.');
+				if(config.accessToken) config.save();
+			};
+			
+			/**
+			 * Changes the text in the status message that appears under the buttons.
+			 */
+			uiMgr.setWaterMessage = function(text) {
+				document.getElementById('lblWaterStatus').innerText = text;
+			};
+			
+			/**
+			 * Show the loading spinner.
+			 */
+			uiMgr.startSpinner = function() {
+				document.getElementById('spinner').style.visibility = 'visible';
+			}
+			
+			/**
+			 * Hide the loading spinner.
+			 */
+			uiMgr.stopSpinner = function() {
+				document.getElementById('spinner').style.visibility = 'hidden';
+			}
+			
+			/**
+			 * Retrieves the current device list the Particle user and updates the UI with options returned.
+			 */
+			uiMgr.selectDevice = function() {
+				try {
+					devices.getDevicesAsync(populateDeviceList);
+				}
+				catch (e) {
+					if(e == 'No access token') {
+						uiMgr.setAccessToken();
+					} else {
+						throw e;
+					}
+				}
+			};
+			
+			
+			
+			return uiMgr;
+		})(config, devices);
+		
+		/* Start of mainline (unencapsulated) logic */
+		if(!config.accessToken) {
+			uiMgr.setAccessToken();
+		}
+		
+		uiMgr.selectDevice();
+		
+		document.getElementById('panWaterFunctions').style.display = 'none';
+		
+		/** Handle the user clicking on the "Start watering" button */
+		var startHandler = function() {
+			var channelNumber = parseInt(document.getElementById('txtWaterChannel').value);
+			var waterSeconds = parseInt(document.getElementById('txtWaterSeconds').value);
+			
+			if(channelNumber > -1 && waterSeconds > 0 && waterSeconds < 7200) {
+			
+				devices.callParticleFunction('queueWater', pad(channelNumber,2) + pad(waterSeconds, 4), 
+				function(output){
+					var success = false;
+				
+					switch(output.return_value ) 
+					{
+						case 0:
+							uiMgr.setWaterMessage('Watering started.');
+							success = true;
+							break;
+						case 1:
+							uiMgr.setWaterMessage('Watering queued.');
+							success = true;
+							break;
+						case -1:
+							uiMgr.setWaterMessage('Invalid solenoid.');
+							break;
+						case -2:
+							uiMgr.setWaterMessage('Invalid watering time.');
+							break;
+					}
+					
+					if(success) {
+						document.getElementById('txtWaterChannel').value = '';
+						document.getElementById('txtWaterSeconds').value = '';
+					}
+					uiMgr.refreshDeviceStatus();
+				}, 
+				function(){
+					uiMgr.setWaterMessage('Failed to start.');
+				});
+			} else {
+				uiMgr.setWaterMessage('Invalid channel number or duration');
+			}
+		};
+		
+		/* Handle the user clicking on the "Stop All" button */
+		var stopHandler = function() {
+			devices.callParticleFunction('stopAll', '', 
+			function(output){
+				if(output.return_value == 0) 
+				{
+					uiMgr.setWaterMessage('No active jobs to stop.');
+				} else if (output.return_value == 1) {
+					uiMgr.setWaterMessage('One or more jobs stopped.');
+				}else {
+					uiMgr.setWaterMessage('Unknown result - channels maybe stopped.');
+				}
+				uiMgr.refreshDeviceStatus();
+			}, 
+			function(){
+				uiMgr.setWaterMessage('Failed to stop');
+			});
+		};
+		
+		document.getElementById('btnStartWater').addEventListener('click',startHandler);
+		document.getElementById('btnStopAll').addEventListener('click',stopHandler);
+		
+		/* Utility to pad channel IDs out to two digits, required by firmware */
+		function pad(number, length) {
+			var str = '' + number;
+			while (str.length < length) {
+				str = '0' + str;
+			}
+			return str;
+		}
+		
+	</script>
+</body>
+</html>
